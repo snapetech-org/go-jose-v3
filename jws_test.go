@@ -19,6 +19,7 @@ package jose
 import (
 	"crypto/x509"
 	"encoding/base64"
+	"github.com/go-jose/go-jose/v3/json"
 	"strings"
 	"testing"
 
@@ -689,4 +690,114 @@ func TestJWSComputeAuthDataBase64(t *testing.T) {
 	assert.Nil(t, err)
 	// Payload should *not* be b64 encoded
 	assert.Len(t, data, len(b64FalseHeader.base64())+len(payload)+1)
+}
+
+func TestEmbeddedPrivateJWKRejected(t *testing.T) {
+	privateJWK, err := fromRsaPrivateKey(rsaTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicJWK := fromRsaPublicKey(&rsaTestKey.PublicKey)
+	strayJWK := fromRsaPublicKey(&rsaTestKey.PublicKey)
+	strayJWK.P, strayJWK.Q = privateJWK.P, privateJWK.Q
+
+	testCases := []struct {
+		name        string
+		jwk         *rawJSONWebKey
+		unprotected bool // place the jwk in the unprotected header instead
+		wantErr     bool
+	}{
+		{name: "public key", jwk: publicJWK},
+		{name: "private key", jwk: privateJWK, wantErr: true},
+		{name: "private key in unprotected header", jwk: privateJWK, unprotected: true, wantErr: true},
+		{name: "symmetric key", jwk: &rawJSONWebKey{Kty: "oct", K: newBuffer([]byte("111"))}, wantErr: true},
+		{name: "public key with stray private members", jwk: strayJWK, wantErr: true},
+	}
+
+	payload := newBuffer([]byte("Lorem ipsum dolor sit amet"))
+	signature := newBuffer([]byte("not a real signature"))
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			marshal := func(v interface{}) []byte {
+				t.Helper()
+				b, err := json.Marshal(v)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return b
+			}
+
+			alg := json.RawMessage(`"RS256"`)
+			jwk := json.RawMessage(marshal(tc.jwk))
+			protected := rawHeader{headerAlgorithm: &alg}
+			var unprotected *rawHeader
+			if tc.unprotected {
+				unprotected = &rawHeader{headerJWK: &jwk}
+			} else {
+				protected[headerJWK] = &jwk
+			}
+			encProtected := newBuffer(marshal(protected))
+
+			messages := map[string]string{
+				"flattened": string(marshal(rawJSONWebSignature{
+					Payload:   payload,
+					Protected: encProtected,
+					Header:    unprotected,
+					Signature: signature,
+				})),
+				"general": string(marshal(rawJSONWebSignature{
+					Payload: payload,
+					Signatures: []rawSignatureInfo{{
+						Protected: encProtected,
+						Header:    unprotected,
+						Signature: signature,
+					}},
+				})),
+			}
+			if !tc.unprotected {
+				messages["compact"] = encProtected.base64() + "." + payload.base64() + "." + signature.base64()
+			}
+
+			for name, msg := range messages {
+				_, err := ParseSigned(msg)
+				if tc.wantErr {
+					if err == nil || !strings.Contains(err.Error(), "JWK contains private parameters") {
+						t.Errorf("%s: expected private parameters error, got %v", name, err)
+					}
+				} else if err != nil {
+					t.Errorf("%s: unexpected error: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestGeneralSerializationUnprotectedHeader(t *testing.T) {
+	// The unprotected header of each signature must be reflected in the parsed
+	// Header and Unprotected fields for both serializations.
+	protected := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte("Lorem ipsum dolor sit amet"))
+	signature := base64.RawURLEncoding.EncodeToString([]byte("not a real signature"))
+	unprotected := `"header":{"kid":"from-unprotected"}`
+
+	messages := map[string]string{
+		"flattened": `{"payload":"` + payload + `","protected":"` + protected + `",` + unprotected + `,"signature":"` + signature + `"}`,
+		"general":   `{"payload":"` + payload + `","signatures":[{"protected":"` + protected + `",` + unprotected + `,"signature":"` + signature + `"}]}`,
+	}
+	for name, msg := range messages {
+		t.Run(name, func(t *testing.T) {
+			obj, err := ParseSigned(msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sig := obj.Signatures[0]
+			if sig.Header.KeyID != "from-unprotected" {
+				t.Errorf("Header.KeyID = %q, want %q", sig.Header.KeyID, "from-unprotected")
+			}
+			if sig.Unprotected.KeyID != "from-unprotected" {
+				t.Errorf("Unprotected.KeyID = %q, want %q", sig.Unprotected.KeyID, "from-unprotected")
+			}
+		})
+	}
 }

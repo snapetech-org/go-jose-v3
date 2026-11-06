@@ -22,8 +22,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/x509"
+	"github.com/go-jose/go-jose/v3/json"
 	"math/big"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -711,5 +713,13 @@ func TestEmptyEncryptedKey(t *testing.T) {
 		t.Errorf("Decrypt() after ParseEncryptedJSON() with empty encrypted key should fail")
 	} else if err.Error() != want {
 		t.Errorf("Decrypt() after ParseEncryptedJSON() with empty encrypted key: got %q, want %q", err, want)
+	}
+}
+
+func TestPrivateEPKRejected(t *testing.T) {
+	epk := json.RawMessage(`{"kty":"EC","crv":"P-256","x":"AQAB","y":"AQAB","d":"AQAB"}`)
+	headers := rawHeader{headerEPK: &epk}
+	if _, err := headers.getEPK(); err == nil || !strings.Contains(err.Error(), "JWK contains private parameters") {
+		t.Errorf("expected private parameters error, got %v", err)
 	}
 }

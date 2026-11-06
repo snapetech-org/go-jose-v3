@@ -1,3 +1,12 @@
+# Maintained v3 security compatibility fork
+
+This repository backports the complete CVE-2026-116587 fix while retaining the
+v3 API. See [BACKPORT.md](BACKPORT.md) for provenance, the pinned module
+replacement, compatibility limits and validation. New applications should use
+maintained upstream v4 or newer.
+
+---
+
 # Go JOSE
 
 ### Versions
